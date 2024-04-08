@@ -39,7 +39,8 @@ class DailyAlarmStack(Stack):
             events_targets.LambdaFunction(self.lambda_fn)
         )
         run_daily_expression = cloudwatch.MathExpression(
-            expression="m + IF(m < 1, 2, 0)",  # check if Lambda runs 1 time per day
+            expression="RUNNING_SUM(m)",  # check if Lambda runs 1 time per day
+            # expression="RUNNING_SUM(m + IF(m < 1, 2, 0))",  # threshold=1
             # expression="IF(m > 1 OR m < 1, 1, 0)",  # threshold=0
             using_metrics={"m": self.lambda_fn.metric_invocations(statistic="sum")},
             period=Duration.hours(1),  # hard coded, check once per hour
@@ -51,7 +52,7 @@ class DailyAlarmStack(Stack):
             alarm_description="Watching for Lambda to run exactly once per day",
             comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
             threshold=1,
-            datapoints_to_alarm=24,  # M variable in M out of N
+            datapoints_to_alarm=1,  # M variable in M out of N
             evaluation_periods=24,  # N variable in M out of N
             treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
         )
