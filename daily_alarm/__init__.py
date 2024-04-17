@@ -18,7 +18,8 @@ class DailyAlarmStack(Stack):
 
         self.eventbridge_daily_scheduled_event = events.Rule(
             self,
-            "run_every_day",
+            "RunEveryDay",
+            rule_name="run-every-day",
             event_bus=None,  # "default" bus
             schedule=events.Schedule.cron(hour="23", minute="0"),
         )
@@ -38,21 +39,64 @@ class DailyAlarmStack(Stack):
         self.eventbridge_daily_scheduled_event.add_target(
             events_targets.LambdaFunction(self.lambda_fn)
         )
-        run_daily_expression = cloudwatch.MathExpression(
-            expression="RUNNING_SUM(m)",  # check if Lambda runs 1 time per day
-            # expression="RUNNING_SUM(m + IF(m < 1, 2, 0))",  # threshold=1
-            # expression="IF(m > 1 OR m < 1, 1, 0)",  # threshold=0
-            using_metrics={"m": self.lambda_fn.metric_invocations(statistic="sum")},
-            period=Duration.hours(1),  # hard coded, check once per hour
-        )
-        self.daily_lambda_alarm = run_daily_expression.create_alarm(
+        self.lambda_under_invoked_alarm = cloudwatch.Alarm(
             self,
-            "DailyLambdaAlarm",
-            alarm_name="daily-lambda-alarm",
+            "LambdaUnderInvokedAlarm",
+            alarm_name="lambda-under-invoked-alarm",
+            metric=self.lambda_fn.metric_invocations(
+                statistic="sum", period=Duration.hours(1)
+            ),
+            comparison_operator=cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
+            threshold=1,
+            datapoints_to_alarm=24,  # M variable in M out of N
+            evaluation_periods=24,  # N variable in M out of N
+        )
+        run_daily_expression = cloudwatch.MathExpression(
+            expression="FILL(m, 0)",  # fill MISSING data
+            using_metrics={
+                "m": self.lambda_fn.metric_invocations(statistic="sum"),
+            },
+            period=Duration.hours(24),
+        )
+        self.lambda_over_invoked_alarm = run_daily_expression.create_alarm(
+            self,
+            "LambdaUnderOverAlarm",
+            alarm_name="lambda-over-invoked-alarm",
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
+            threshold=1,
+            evaluation_periods=1,
+        )
+        alarm_rule = cloudwatch.AlarmRule.any_of(
+            self.lambda_under_invoked_alarm, self.lambda_over_invoked_alarm
+        )
+        self.daily_lambda_composite_alarm = cloudwatch.CompositeAlarm(
+            self,
+            "DailyLambdaCompositeAlarm",
+            composite_alarm_name="daily-lambda-composite-alarm",
+            alarm_rule=alarm_rule,
+            alarm_description="Watching for Lambda to run exactly once per day",
+            # actions_enabled=None, actions_suppressor=None, actions_suppressor_extension_period=None, actions_suppressor_wait_period=None,
+        )
+        run_daily_expression = cloudwatch.MathExpression(
+            expression=(
+                "IF(FILL(m, 0) == 1, 0, 1)"  # check if Lambda runs 1 time per day
+                "+ e"  # without any errors
+            ),
+            using_metrics={
+                "m": self.lambda_fn.metric_invocations(statistic="sum"),
+                "e": self.lambda_fn.metric_errors(statistic="sum"),
+            },
+            period=Duration.hours(24),
+        )
+        self.daily_lambda_with_error_alarm = run_daily_expression.create_alarm(
+            self,
+            "DailyLambdaWithErrorAlarm",
+            alarm_name="daily-lambda-with-error-alarm",
             alarm_description="Watching for Lambda to run exactly once per day",
             comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-            threshold=1,
-            datapoints_to_alarm=1,  # M variable in M out of N
-            evaluation_periods=24,  # N variable in M out of N
-            treat_missing_data=cloudwatch.TreatMissingData.BREACHING,
+            threshold=0,
+            evaluation_periods=1,
+            treat_missing_data=cloudwatch.TreatMissingData.BREACHING,  # used FILL to avoid dealing with MISSING
         )
